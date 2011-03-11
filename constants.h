@@ -68,4 +68,7 @@
 // Note number of the basenote for the keys
 #define MIDI_BASE_NOTE 36
 
+// midi note led to use for groundfx in fourbanks_off mode
+#define GROUNDFX_LED 48
+
 #endif // _CONSTANTS_H_INCLUDED

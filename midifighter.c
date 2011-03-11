@@ -684,7 +684,15 @@ void Midifighter_Task(void)
         // MIDI keystate array and set an LED bit if that MIDI note has a
         // velocity greater than zero.
         for (uint8_t i=MIDI_BASE_NOTE; i<MIDI_BASE_NOTE + 16; ++i) {
-            if (g_midi_note_state[i] > 0) {
+            if (i == GROUNDFX_LED) {
+                if (g_led_groundfx_counter < 8) {
+                    leds |= 1 << midi_note_to_key(i);
+                } else if (g_led_groundfx_counter < 24) {
+                    leds |= 0 << midi_note_to_key(i);
+                } else {
+                    leds |= 1 << midi_note_to_key(i);
+                }
+            } else if (g_midi_note_state[i] > 0) {
                 leds |= 1 << midi_note_to_key(i);
             }
         }
@@ -701,7 +709,15 @@ void Midifighter_Task(void)
         // ------------------
         // The top four keys display which bank is selected. At least one
         // bank is always selected.
-        leds = (1 << g_key_bank_selected);
+
+        // Use the selected deck to show groundfx 
+        if (g_led_groundfx_counter < 8) {
+            leds = (1 << g_key_bank_selected);
+        } else if (g_led_groundfx_counter < 24) {
+            leds = (0 << g_key_bank_selected);
+        } else {
+            leds = (1 << g_key_bank_selected);
+        }
 
         // Update the bottom 12 LEDs with the MIDI state of the selected
         // bank.

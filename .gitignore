@@ -1,0 +1,23 @@
+# Compiled Source
+*.eep
+*.elf
+*.hex
+*.lss
+*.lst
+*.map
+*.o
+*.sym
+
+# Dependencies
+.dep/
+LUFA-101122.zip
+LUFA101122/
+
+# OS generated files
+.DS_Store?
+ehthumbs.db
+Icon?
+Thumbs.db
+
+# Diffs
+diffs

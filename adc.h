@@ -25,7 +25,4 @@
 
 // ADC Functions ---------------------------------------
 
-void adc_setup(void);
-uint16_t adc_read(uint8_t channel);
-
 #endif // _ADC_H_INCLUDED

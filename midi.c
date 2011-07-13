@@ -21,6 +21,8 @@
 // rgreen 2009-10-17
 
 #include <string.h>  // for memset()
+#include <avr/pgmspace.h>
+
 #include "constants.h"
 #include "usb_descriptors.h"
 #include "key.h"

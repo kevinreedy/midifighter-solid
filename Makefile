@@ -135,6 +135,7 @@ SRC = $(TARGET).c                                                 \
       key.c                                                       \
       midi.c     												  \
 	  menu.c													  \
+	  combo.c                                                     \
       selftest.c                                                  \
       expansion.c                                                 \
       usb_descriptors.c                                           \
@@ -192,9 +193,12 @@ CDEFS += $(LUFA_OPTS)
 
 # ************** PROJECT SPECIFIC SETTINGS *******************
 
-# CDEFS += -DBANKKEY_TEST
 # CDEFS += -DMULTIPLEX_ANALOG
-# CDEFS += -DFOURBANKS_LED
+CDEFS += -DBANKKEY_TEST
+CDEFS += -DFOURBANKS_LED
+CDEFS += -DEAN_SMARTFADER
+CDEFS += -DCOMBO
+
 
 # ************** PROJECT SPECIFIC SETTINGS *******************
 
@@ -212,7 +216,6 @@ CPPDEFS += -DBOARD=BOARD_$(BOARD)
 CPPDEFS += $(LUFA_OPTS)
 #CPPDEFS += -D__STDC_LIMIT_MACROS
 #CPPDEFS += -D__STDC_CONSTANT_MACROS
-
 
 
 #---------------- Compiler Options C ----------------

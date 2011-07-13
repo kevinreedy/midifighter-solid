@@ -1,6 +1,6 @@
 // Main loop for the Midifighter firmware
 //
-//   Copyright (C) 2009 Robin Green
+//   Copyright (C) 2009-2011 Robin Green
 //
 //   This file is part of the Midifighter Firmware.
 //
@@ -37,6 +37,7 @@
 //         Menu basenote updated to handle Fourbanks mode.
 //   0.19: Removed MIDI basenote, fixed MIDI map to be consistent.
 //   0.20: Added Fourbanks Internal and External modes and menu items.
+//   0.21: Added combo key matching
 
 
 #include <stdbool.h>
@@ -68,6 +69,11 @@
 #include "usb_descriptors.h"
 
 
+
+#ifdef COMBO
+#include "combo.h"
+#endif
+
 // Forward Declarations --------------------------------------------------------
 
 // Declare the MIDI function.
@@ -78,6 +84,42 @@ void EVENT_USB_Device_Connect(void);
 void EVENT_USB_Device_Disconnect(void);
 void EVENT_USB_Device_ConfigurationChanged(void);
 void EVENT_USB_Device_UnhandledControlRequest(void);
+
+// Helper functions ------------------------------------------------------------
+
+// Linear interpolation between two values.
+// 8-bit fixed point values where 0 = 0.0f and 255 = 1.0f
+uint8_t lerp(uint8_t high, uint8_t low, uint8_t t)
+{
+    uint8_t delta = high - low;
+    uint16_t diff = (t*delta) + 128;
+    return low + (diff >> 8);
+}
+
+uint8_t remap(uint8_t value, uint8_t from, uint8_t to, uint8_t lo, uint8_t hi)
+{
+    // Remap the values in the range [lo..hi] into the values [from..to]
+    // e.g. remap the value in the range 3..124 into values 0..127 with a
+    // dead zone at either end.
+
+    //    d      e
+    // 2  D2=64  E2=124   from, to
+    // 3  D3=0   E3=127    lo, hi
+
+    // =IF(A15 < $D$2 , $D$3 ,
+    //     IF(A15 > $E$2, $E$3,
+    //         $D$3 + FLOOR( FLOOR((A15-$D$2)*($E$3-$D$3),1) / floor($E$2-$D$2,1) ,1)))
+
+    // IF(A15 < from)  lo
+    // IF(A15 > to) hi
+    // else lo +  (A15-from) * (hi-lo) ) / (to-from)
+
+    if (value < from) return lo;
+    if (value > to) return hi;
+    uint16_t numer = (value - from) * (hi - lo);
+    uint16_t denom = (to - from);
+    return (uint8_t)(lo + (numer / denom));
+}
 
 // USB Tasks and Events --------------------------------------------------------
 
@@ -396,6 +438,7 @@ void Midifighter_Task(void)
 
     // Expansion port pins generate the MIDI notes 4 to 7.
     const uint8_t MIDI_DIGITAL_NOTE = 4;  // lowest digital note.
+
     // NOTE: enabling fourbanks external mode turns off digital note generation.
     if (g_key_fourbanks_mode != FOURBANKS_EXTERNAL &&
         g_exp_digital_read != 0) {
@@ -449,9 +492,9 @@ void Midifighter_Task(void)
         static uint16_t adc_value[NUM_ANALOG];
 
 #ifdef MULTIPLEX_ANALOG
-        adc_value[0] = adc_read(0);
-        adc_value[1] = adc_read(1);
-        adc_value[2] = adc_read(2);
+        adc_value[0] = exp_adc_read(0);
+        adc_value[1] = exp_adc_read(1);
+        adc_value[2] = exp_adc_read(2);
 
         // switch the digital ports to output high (source, DDDn=1, PORTDn=1)
         DDRD |= EXP_DIGITAL0 + EXP_DIGITAL1 + EXP_DIGITAL2;
@@ -465,13 +508,22 @@ void Midifighter_Task(void)
             // wait a moment
             // _delay_ms(1);
             // read the analog input.
-            adc_value[3+i] = adc_read(3);
+            adc_value[3+i] = exp_adc_read(3);
         }
 #else
-        adc_value[0] = adc_read(0);
-        adc_value[1] = adc_read(1);
-        adc_value[2] = adc_read(2);
-        adc_value[3] = adc_read(3);
+        // Read the full 10-bit value from each ADC channel. Take the
+        // average of several samples to smooth out the noise.
+        for (uint8_t i=0; i<NUM_ANALOG; ++i) {
+            adc_value[i] = 0;
+        }
+        for (uint8_t samples = 0; samples < 4; ++samples) {
+            for (uint8_t i=0; i<NUM_ANALOG; ++i) {
+                adc_value[i] += exp_adc_read(i);
+            }
+        }
+        for (uint8_t i=0; i<NUM_ANALOG; ++i) {
+            adc_value[i] >>= 2;
+        }
 #endif
         // return the digital outs to ins and reset the pull-up resistor.
         //DDRD &= ~(EXP_DIGITAL0 + EXP_DIGITAL1 + EXP_DIGITAL2);
@@ -493,9 +545,6 @@ void Midifighter_Task(void)
             }
         }
 
-        const uint8_t MIDI_ANALOG_NOTE = 100;
-        const uint8_t MIDI_ANALOG_CC = 16;
-
         // Next, check the ADC values to see if they have changed.
         for (uint8_t i=0; i<NUM_ANALOG; ++i) {
 
@@ -508,23 +557,47 @@ void Midifighter_Task(void)
             // been a change, generate the three new MIDI events.
             if (value != prev_value) {
 
-                // 1. Generate the default CC event.
-                midi_stream_cc(MIDI_ANALOG_CC + i, value);
+                const uint8_t NOTEON_LOW = 3;
+                const uint8_t NOTEON_HIGH = 127 - NOTEON_LOW;
+                const uint8_t MIDI_ANALOG_NOTE = 100;
+                const uint8_t MIDI_ANALOG_CC = 16;
+                uint8_t cc_a = MIDI_ANALOG_CC + 2*i;
+                uint8_t cc_b = MIDI_ANALOG_CC + 2*i + 1;
+                uint8_t note_a = MIDI_ANALOG_NOTE + 2*i;
+                uint8_t note_b = MIDI_ANALOG_NOTE + 2*i + 1;
 
-                // 2. If the value is in the range 50%-100%, output the
-                //    second CC range. The "+1" is to ensure they both hit
-                //    127 at the same time.
-                static uint8_t second_cc_value = 0;
-                if (value >= 64) {
-                    second_cc_value = 2*(value - 64) + 1;
-                    midi_stream_cc(MIDI_ANALOG_CC + 1 + i, second_cc_value);
-                } else {
-                    // Make sure we zero the second CC value when we
-                    // enter the lower range.
-                    if (second_cc_value != 0) {
-                        midi_stream_cc(MIDI_ANALOG_CC + 1 + i, 0);
-                        second_cc_value = 0;
+                // New mapping style:
+                //
+                //   0  3             64           124 127
+                //   |--|-------------|-------------|--|   - full range
+                //
+                //      |0=======================127|      - CC A
+                //                    |0=========105|      - CC B
+                //
+                //   |__|on____________________________|   - note A
+                //   |off___________________________|on|   - note B
+                //      3                          124
+
+                if (value >= NOTEON_LOW && value <= NOTEON_HIGH) {
+
+                    // 1. Generate the default CC event.
+                    midi_stream_cc(cc_a, remap(value, NOTEON_LOW,NOTEON_HIGH, 0,127));
+
+                    // 2. If the value is in the range 50%-100%, output the
+                    // second CC range.
+                    static uint8_t second_cc_value = 0;
+                    if (value >= 64) {
+                        second_cc_value = remap(value, 64,NOTEON_HIGH, 0,105);
+                        midi_stream_cc(cc_b, second_cc_value);
+                    } else {
+                        // Make sure we zero the second CC value when we
+                        // enter the lower range.
+                        if (second_cc_value > 0) {
+                            second_cc_value = 0;
+                            midi_stream_cc(cc_b, second_cc_value);
+                        }
                     }
+
                 }
 
                 // 3. Generate a Note event if we have just entered or left
@@ -534,18 +607,17 @@ void Midifighter_Task(void)
                 //   |off|on----------------------------| note A
                 //   |off----------------------------|on| note B
                 //
-                uint8_t note_a = MIDI_ANALOG_NOTE + 2*i;
-                uint8_t note_b = MIDI_ANALOG_NOTE + 2*i + 1;
-                if (value == 0 && prev_value > 0) {
+                if (value <= NOTEON_LOW && prev_value > NOTEON_LOW) {
                     midi_stream_note(note_a, true);
                     g_midi_note_state[note_a] = g_midi_velocity;
-                } else if (value > 0 && prev_value == 0) {
+                } else if (value > NOTEON_LOW && prev_value <= NOTEON_LOW) {
                     midi_stream_note(note_a, false);
                     g_midi_note_state[note_a] = 0;
-                } else if (value == 127 && prev_value < 127) {
+
+                } else if (value >= NOTEON_HIGH && prev_value < NOTEON_HIGH) {
                     midi_stream_note(note_b, true);
                     g_midi_note_state[note_b] = g_midi_velocity;
-                } else if (value < 127 && prev_value == 127) {
+                } else if (value < NOTEON_HIGH && prev_value >= NOTEON_HIGH) {
                     midi_stream_note(note_b, false);
                     g_midi_note_state[note_b] = 0;
                 }
@@ -667,7 +739,47 @@ void Midifighter_Task(void)
         physical_keyup >>= 1;
     }
 
-
+#ifdef COMBO
+    // Recognize combo key events
+    // --------------------------
+    combo_action_t action = combo_recognize(g_key_down, g_key_up, g_key_state);
+    switch (action) {
+        case COMBO_A_DOWN:
+            midi_stream_note(8, true);
+            break;
+        case COMBO_A_RELEASE:
+            midi_stream_note(8, false);
+            break;
+        case COMBO_B_DOWN:
+            midi_stream_note(9, true);
+            break;
+        case COMBO_B_RELEASE:
+            midi_stream_note(9, false);
+            break;
+        case COMBO_C_DOWN:
+            midi_stream_note(10, true);
+            break;
+        case COMBO_C_RELEASE:
+            midi_stream_note(10, false);
+            break;
+        case COMBO_D_DOWN:
+            midi_stream_note(11, true);
+            break;
+        case COMBO_D_RELEASE:
+            midi_stream_note(11, false);
+            break;
+        case COMBO_E_DOWN:
+            midi_stream_note(12, true);
+            break;
+        case COMBO_E_RELEASE:
+            midi_stream_note(12, false);
+            break;
+        default:
+            // do nothing.
+            break;
+    }
+#endif // COMBO
+    
     // Finished generating MIDI events, flush the endpoints.
     MIDI_Device_Flush(g_midi_interface_info);
 
@@ -793,7 +905,10 @@ void Midifighter_Task(void)
     //
     // There are 24 clock ticks per beat, 96 per bar.
     //
-    if (g_led_groundfx_counter < 8) {
+    if (g_led_groundfx_counter == 0) {
+        led_groundfx_state(true);
+    }
+    else if (g_led_groundfx_counter < 8) {
         led_groundfx_state(false);
     } else if (g_led_groundfx_counter < 24) {
         led_groundfx_state(true);
@@ -823,26 +938,33 @@ int main(void)
     // Start up the subsystems.
     eeprom_setup();   // setup global settings from the EEPROM
     spi_setup();  // startup the SPI bus.
-    adc_setup();  // startup and disable the ADC chip.
     led_setup();  // startup the LED chip.
     key_setup();  // startup the key debounce interrupt.
     exp_setup();  // startup the expansion port.
     midi_setup(); // startup the MIDI keystate and LUFA MIDI Class interface.
 
-    // Check whether this is the first time this device has been booted.
-    // If so, we need to do the factory hardware tests.
+	// Check whether this is the first time this device has been booted.
+	//If so, we need to do the factory hardware tests.
     if(!g_self_test_passed) {
         self_test();
     }
 
     // Power-on light show. Woo! This generally signals that we are alive.
     led_count_all_leds();
+	
+	// PCB version MF_MK1-3 has an issue where the clock inhibit pins for the 
+	// 74HC165 shift registers are floating causing a delay of approximately
+	// 1.5 s before buttons can be read correctly after a hard reset. This
+	// delay is necessary to mask the problem on this board version.
+	
+	_delay_ms(1500);
 
     // Check to see if the bootloader has been requested by the user holding
     // down the four corner keys at power on time. We have to do this before
     // the USB scheduler starts because shutting down these subsystems
     // before entering the bootloader is a little involved.
-    key_read();
+    
+	key_read();
     if (g_key_state == 0x9009) {
         // Drop to Bootloader:
         //  # . . #
@@ -873,10 +995,14 @@ int main(void)
         // space and 12Kb of Program space. The bootloader therefore starts
         // at 0x3000. For more details see the AT90USB162 docs, Table 23-8,
         // page 239.
-        asm("ldi r30, 0x00");
-        asm("ldi r31, 0x30");
-        asm("icall");
-
+	    //  asm("ldi r30, 0x00");
+	    //   asm("ldi r31, 0x30");
+	    //   asm("icall");
+	    // The assembly code preceding was originally used, but broke when code 
+		// size exceeded 8K
+	
+		asm("jmp 0x3000");
+		
         // We should never reach here. If you see this LED pattern:
         // then something went horribly wrong.
         //  . . . o

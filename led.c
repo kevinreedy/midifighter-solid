@@ -102,7 +102,7 @@ void led_groundfx_state(bool state)
 //
 void led_count_all_leds(void)
 {
-    const int kDelay = 40;
+    const int kDelay = 60;
     // Run through the LEDs turning them on one by one.
     uint16_t value = 0;
     for(uint8_t i=0; i<16; ++i) {

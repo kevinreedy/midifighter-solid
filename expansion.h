@@ -51,9 +51,12 @@ extern uint16_t g_exp_analog_prev[NUM_ANALOG];
 // functions -----------------------------------------------------------------
 
 void exp_setup(void);
+
 void exp_buffer_digital_inputs(void);
 uint8_t exp_key_read(void);
 void exp_key_calc(void);
+
+uint16_t exp_adc_read(uint8_t channel);
 
 // ---------------------------------------------------------------------------
 
